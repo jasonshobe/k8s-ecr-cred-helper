@@ -1,17 +1,19 @@
 # ECR Credentials Helper for Kubernetes
 
 A utility to update a Docker registry secret for AWS ECR repositories in all
-labeled namespaces. The image is intended to be run as a
-[Kubernetes CronJob](https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/).
+labeled namespaces. The image is intended to be deployed as a pod in
+Kuberentes.
 
-When the job is run, a Docker registry secret will be created or updated in
-each labeled namespace. This secret can be used to pull images from AWS ECR
-repositories.
+When the pod starts, all the secret file in each labeled namespace is
+updated. The secret files are then updated on the defined schedule (every six
+hours by default). The pod also watches for any labeled namespaces being
+created in order to create the secret file.
 
 ## How to this image
 
-Target namespaces should have the label `credentialType` set to `ecr`. For
-example,
+Target namespaces should have the label `credentialType` set to `ecr`. The
+label name and value can be changed with the `ECR_LABEL_NAME` and
+`ECR_LABEL_VALUE` environment variables, respectively. For example,
 
 ```yaml
 apiVersion: v1
@@ -60,42 +62,45 @@ subjects:
   name: ecr-cred-helper
 ```
 
-Create a job that runs every 6 hours:
+Create the deployment for the pod:
 
 ```yaml
-apiVersion: batch/v1
-kind: CronJob
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: ecr-cred-helper
+  labels:
+    app: ecr-cred-helper
 spec:
-  schedule: "0 */6 * * *"
-  jobTemplate:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ecr-cred-helper
+  template:
+    metadata:
+      labels:
+        app: ecr-cred-helper
     spec:
-      template:
-        spec:
-          serviceAccountName: ecr-cred-helper
-          containers:
-          - name: ecr-cred-helper
-            image: jasonshobe/k8s-ecr-cred-helper:1.0.0
-            imagePullPolicy: IfNotPresent
-            env:
-            - name: AWS_ACCESS_KEY_ID
-              valueFrom:
-                secretKeyRef:
-                  key: AWS_ACCESS_KEY_ID
-                  name: aws-creds
-            - name: AWS_SECRET_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  key: AWS_SECRET_ACCESS_KEY
-                  name: aws-creds
-            - name: AWS_DEFAULT_REGION
-              value: us-east-1
-            - name: DOCKER_REGISTRY
-              value: 000000000000.dkr.ecr.us-east-1.amazonaws.com
-            - name: ECR_SECRET_NAME
-              value: ecr-creds
-          restartPolicy: OnFailure
+      serviceAccountName: ecr-cred-helper
+    containers:
+    - name: ecr-cred-helper
+      image: jasonshobe/k8s-ecr-cred-helper:1.0.0
+      imagePullPolicy: IfNotPresent
+      env:
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            key: AWS_ACCESS_KEY_ID
+            name: aws-creds
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            key: AWS_SECRET_ACCESS_KEY
+            name: aws-creds
+      - name: AWS_DEFAULT_REGION
+        value: us-east-1
+      - name: DOCKER_REGISTRY
+        value: 000000000000.dkr.ecr.us-east-1.amazonaws.com
 ```
 
 ## Environment Variables
@@ -122,3 +127,17 @@ The ECR hostname, e.g. `aws_account_id.dkr.ecr.region.amazonaws.com`.
 
 The name of the secret created in the labeled namespaces. By default,
 `ecr-creds` is used.
+
+### `ECR_LABEL_NAME`
+
+The name of the label on namespaces that identify namespaces to be updated.
+
+### `ECR_LABEL_VALUE`
+
+The value of the label on namespaces that identify namespaces to be updated.
+
+### `ECR_CRON_SCHEDULE`
+
+The cronjob schedule string controlling how often the credentials are
+updated. By default, it is done every 6 hours using the expression
+`0 */6 * * *`.

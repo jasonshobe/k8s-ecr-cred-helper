@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-ecr": "^3.22.0",
-    "@kubernetes/client-node": "^0.15.0"
+    "@kubernetes/client-node": "^0.15.0",
+    "node-cron": "^3.0.0"
   }
 }

@@ -1,2 +1,4 @@
 js/node_modules/
 js/npm-debug.log
+.vscode/
+.idea/

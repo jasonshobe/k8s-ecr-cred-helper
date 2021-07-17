@@ -11,4 +11,4 @@ WORKDIR /var/app/
 
 RUN npm ci --only=production
 
-CMD ["node", "js/index.js"]
+CMD ["node", "src/index.js"]

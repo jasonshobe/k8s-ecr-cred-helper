@@ -1,0 +1,17 @@
+{
+  "name": "k8s-ecr-cred-helper",
+  "version": "1.0.0",
+  "description": "Utility that creates and updates secrets for AWS ECR.",
+  "main": "src/index.js",
+  "repository": "https://github.com/jasonshobe/k8s-ecr-cred-helper.git",
+  "author": "Jason Shobe <jason.shobe@gmail.com>",
+  "license": "Apache-2.0",
+  "private": true,
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-ecr": "^3.22.0",
+    "@kubernetes/client-node": "^0.15.0"
+  }
+}

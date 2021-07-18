@@ -147,10 +147,12 @@ function onNamespaceWatchComplete(error) {
     }
 }
 
-const watch = new k8sApi.Watch(k8sConfig);
-watch.watch('/api/v1/namespaces', { labelSelector: labelSelector },
-    onNamespaceWatchEvent, onNamespaceWatchComplete);
+(() => {
+    const watch = new k8s.Watch(k8sConfig);
+    watch.watch('/api/v1/namespaces', { labelSelector: labelSelector },
+        onNamespaceWatchEvent, onNamespaceWatchComplete);
 
-updateCredentials();
+    updateCredentials();
 
-cron.schedule(cronSchedule, updateCredentials);
+    cron.schedule(cronSchedule, updateCredentials);
+})()

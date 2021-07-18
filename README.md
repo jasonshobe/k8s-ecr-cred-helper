@@ -17,6 +17,9 @@ not be stable.**
 
 ### Install with Helm
 
+The sources for the Helm chart can be found at
+https://github.com/jasonshobe/helm-charts/charts/ecr-cred-helper.
+
 Add the Helm repository:
 
 ```shell

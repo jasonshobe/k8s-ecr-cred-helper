@@ -11,6 +11,32 @@ created in order to create the secret file.
 
 ## How to this image
 
+**Important: You should use one of the versioned tags for this image. The
+`latest` tag is built from the `main` branch of the GitHub repository and may
+not be stable.**
+
+### Install with Helm
+
+Add the Helm repository:
+
+```shell
+helm repo add jasonshobe https://jasonshobe.github.io/helm-charts
+```
+
+Install the chart:
+
+```shell
+helm install ecr-cred-helper jasonshobe/ecr-cred-helper \
+  -n ecr-cred-helper \
+  --create-namespace \
+  --set aws.accessKeyId=<your AWS access key ID> \
+  --set aws.secretAccessKey=<your AWS secret access key> \
+  --set-string aws.accountId=<your AWS account ID> \
+  --set aws.region=<your AWS region>
+```
+
+### Install Manually
+
 Target namespaces should have the label `credentialType` set to `ecr`. The
 label name and value can be changed with the `ECR_LABEL_NAME` and
 `ECR_LABEL_VALUE` environment variables, respectively. For example,

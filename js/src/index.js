@@ -50,7 +50,7 @@ function getNamespaces() {
  * @returns {Promise<string>} the value of the '.dockerconfigjson' field in the generated secret.
  */
 function getDockerCredentials() {
-    const client = new ECRClient({});
+    const client = new ECRClient({region: process.env.AWS_DEFAULT_REGION});
     const params = {};
     const command = new GetAuthorizationTokenCommand(params);
     return client.send(command).then(response => {
@@ -163,7 +163,16 @@ async function updateCredentials() {
  */
 async function onNamespaceWatchEvent(phase, apiObj) {
     if (phase === 'ADDED') {
-        const token = await getDockerCredentials();
+        var token;
+
+        try {
+            token = await getDockerCredentials();
+        }
+        catch(ex) {
+            log.error("Failed to get Docker credentials", ex);
+            return;
+        }
+
         updateNamespaceCredentials(apiObj.metadata.name, token);
     }
 }

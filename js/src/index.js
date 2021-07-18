@@ -17,6 +17,7 @@
 const { ECRClient, GetAuthorizationTokenCommand } = require('@aws-sdk/client-ecr');
 const k8s = require('@kubernetes/client-node');
 const cron = require('node-cron');
+const differenceInMinutes = require('date-fns/differenceInMinutes');
 
 const registry = process.env.DOCKER_REGISTRY;
 const secretName = process.env.ECR_SECRET_NAME;
@@ -29,17 +30,28 @@ const k8sOptions = {};
 k8sConfig.applyToRequest(k8sOptions);
 const k8sApi = k8sConfig.makeApiClient(k8s.CoreV1Api);
 
+var cachedToken = undefined;
+
+/**
+ * Checks the status of an HTTP response and throws an error if necessary.
+ * 
+ * @param {object} response the HTTP response object.
+ * @param {function} messageSupplier a function that supplies the error message.
+ */
+function checkStatus(response, messageSupplier) {
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw new Error(messageSupplier());
+    }
+}
+
 /**
  * Gets the list of namespaces with the matching label.
  * 
  * @returns {Promise<Array<string>>} the names of the matching namespaces.
  */
 function getNamespaces() {
-    k8sApi.listNamespace(null, false, null, null, labelSelector).then(response => {
-        if (response.response.statusCode !== 200) {
-            throw new Error(`Failed to list namespaces: statusCode=${response.response.statusCode}, statusMessage=${response.response.statusMessage}`)
-        }
-
+    return k8sApi.listNamespace(null, false, null, null, labelSelector).then(response => {
+        checkStatus(response.response, () => `Failed to list namespaces: statusCode=${response.response.statusCode}, statusMessage=${response.response.statusMessage}`);
         return response.body.items.map(ns => ns.metadata.name);
     });
 }
@@ -49,7 +61,7 @@ function getNamespaces() {
  * 
  * @returns {Promise<string>} the value of the '.dockerconfigjson' field in the generated secret.
  */
-function getDockerCredentials() {
+function fetchDockerCredentials() {
     const client = new ECRClient({region: process.env.AWS_DEFAULT_REGION});
     const params = {};
     const command = new GetAuthorizationTokenCommand(params);
@@ -74,85 +86,136 @@ function getDockerCredentials() {
 }
 
 /**
+ * Gets the Docker credentials for the ECR repositories.
+ * 
+ * @param {boolean} [useCache] true to use the cached value or false to fetch a new value.
+ * 
+ * @returns {Promise<string>} the value of the '.dockerconfigjson' field in the generated secret.
+ */
+function getDockerCredentials(useCache) {
+    if(useCache && !!cachedToken) {
+        const age = differenceInMinutes(new Date(), cachedToken.date);
+
+        if(age < 360) {
+            return Promise.resolve(cachedToken.token);
+        }
+    }
+
+    return fetchDockerCredentials().then(token => {
+        cachedToken = {
+            token: token,
+            date: new Date()
+        };
+        return token;
+    });
+}
+
+/**
+ * Determines if a namespace contains the ECR secret.
+ * 
+ * @param {string} namespace the name of the namespace to check.
+ * 
+ * @returns {Promise<boolean>} true if the secret exists or false if it does not.
+ */
+function secretExists(namespace) {
+    return k8sApi.listNamespacedSecret(namespace)
+    .then(response => {
+        checkStatus(response.response, () => `Failed to list secrets in namespace ${namespace}: statusCode=${response.response.statusCode}, statusMessage=${secretsResponse.response.statusMessage}`);
+        return response.body.items.some(
+            config => !!config.metadata && config.metadata.name === secretName);
+    });
+}
+
+/**
+ * Updates an existing ECR secret with new credentials.
+ * 
+ * @param {string} namespace the name of the namespace to update.
+ * @param {string} token the new authentication data.
+ * 
+ * @returns {Promise} an empty promise for error handling.
+ */
+function updateSecret(namespace, token) {
+    console.log(`Updating secret in ${namespace}`)
+    const patch = [
+        {
+            op: 'replace',
+            path: '/data/.dockerconfigjson',
+            value: token
+        }
+    ];
+    const options = {
+        headers: {
+            "Content-type": k8s.PatchUtils.PATCH_FORMAT_JSON_PATCH
+        }
+    };
+    return k8sApi.patchNamespacedSecret(secretName, namespace, patch, undefined, undefined, undefined, undefined, options).then(response => {
+        checkStatus(response.response, () => `Failed to update secret in namespace ${namespace}: statusCode=${response.response.statusCode}, statusMessage=${response.response.statusMessage}`);
+    });
+}
+
+/**
+ * Creates a new ECR secret.
+ * 
+ * @param {string} namespace the name of the namespace to update.
+ * @param {string} token the authentication data.
+ * 
+ * @returns {Promise} an empty promise for error handling.
+ */
+function createSecret(namespace, token) {
+    console.log(`Creating secret in ${namespace}`)
+    const secret = {
+        apiVersion: 'v1',
+        kind: 'Secret',
+        type: 'kubernetes.io/dockerconfigjson',
+        metadata: {
+            name: secretName,
+            namespace: namespace
+        },
+        data: {
+            '.dockerconfigjson': token
+        }
+    };
+    return k8sApi.createNamespacedSecret(namespace, secret).then(response => {
+        checkStatus(response.response, () => `Failed to create secret in namespace ${namespace}: statusCode=${response.response.statusCode}, statusMessage=${response.response.statusMessage}`);
+    });
+}
+
+/**
  * Updates the secret containing the Docker registry credentials in the specified namespace.
  * 
  * @param {string} namespace the name of the namespace to be updated.
  * @param {string} token the authorization token.
  */
-async function updateNamespaceCredentials(namespace, token) {
-    var response = await k8sApi.listNamespacedSecret(namespace);
-
-    if (response.response.statusCode !== 200) {
-        log.error(`Failed to list secrets in namespace ${namespace}: statusCode=${response.response.statusCode}, statusMessage=${response.response.statusMessage}`)
-        return;
-    }
-
-    const exists = response.body.items.some(
-        config => !!config.metadata && config.metadata.name === secretName);
-    var secret;
-
-    if (exists) {
-        secret = {
-            data: {
-                '.dockerconfigjson': token
+function updateNamespaceCredentials(namespace, token) {
+    secretExists(namespace)
+        .then(exists => {
+            if (exists) {
+                return updateSecret(namespace, token);
             }
-        };
-    }
-    else {
-        secret = {
-            apiVersion: 'v1',
-            kind: 'Secret',
-            type: 'kubernetes.io/dockerconfigjson',
-            metadata: {
-                name: secretName,
-                namespace: namespace
-            },
-            data: {
-                '.dockerconfigjson': token
+            else {
+                return createSecret(namespace, token);
             }
-        };
-    }
-
-    if (exists) {
-        response = await k8sApi.patchNamespacedSecret(secretName, namespace, secret);
-        
-        if (response.response.statusCode < 200 || response.response.statusCode >= 300) {
-            log.error(`Failed to update secret in namespace ${namespace}: statusCode=${response.response.statusCode}, statusMessage=${response.response.statusMessage}`)
-        }
-    }
-    else {
-        response = await k8sApi.createNamespacedSecret(namespace, secret);
-        
-        if (response.response.statusCode < 200 || response.response.statusCode >= 300) {
-            log.error(`Failed to create secret in namespace ${namespace}: statusCode=${response.response.statusCode}, statusMessage=${response.response.statusMessage}`)
-        }
-    }
+        })
+        .catch(error => {
+            console.error(`Failed to update credentials in namespace ${namespace}: `, error)
+        });
 }
 
 /**
  * Updates the secret containing the Docker registry credentials in all labeled namespaces.
  */
-async function updateCredentials() {
-    var namespaces;
-    var token;
-
-    try {
-        namespaces = await getNamespaces();
-    }
-    catch(ex) {
-        log.error("Failed to list namespaces", ex);
-        return;
-    }
-
-    try {
-        token = await getDockerCredentials();
-    }
-    catch(ex) {
-        log.error("Failed to get Docker credentials", ex);
-        return;
-    }
-
-    namespaces.forEach(namespace => updateNamespaceCredentials(namespace, token));
+function updateCredentials() {
+    getNamespaces().then(namespaces => {
+        return getDockerCredentials().then(token => [namespaces, token]);
+    })
+    .then(([namespaces, token]) => {
+        if(namespaces) {
+            namespaces.forEach(namespace => updateNamespaceCredentials(namespace, token));
+        }
+    })
+    .catch(error => {
+        console.error('Failed to update credentials: ', error);
+    });
 }
 
 /**
@@ -161,19 +224,14 @@ async function updateCredentials() {
  * @param {string} phase the type of watch event.
  * @param {object} apiObj the namespace that changed.
  */
-async function onNamespaceWatchEvent(phase, apiObj) {
+function onNamespaceWatchEvent(phase, apiObj) {
     if (phase === 'ADDED') {
-        var token;
-
-        try {
-            token = await getDockerCredentials();
-        }
-        catch(ex) {
-            log.error("Failed to get Docker credentials", ex);
-            return;
-        }
-
-        updateNamespaceCredentials(apiObj.metadata.name, token);
+        getDockerCredentials(true).then(token => {
+            updateNamespaceCredentials(apiObj.metadata.name, token);
+        })
+        .catch(error => {
+            console.error('Failed to create secret in new namespace: ', error);
+        });
     }
 }
 
@@ -189,12 +247,26 @@ function onNamespaceWatchComplete(error) {
     else {
         console.log('Namespace watch ended');
     }
+
+    // restart watch if connection is broken
+    watchNamespaces();
 }
 
-const watch = new k8s.Watch(k8sConfig);
-watch.watch('/api/v1/namespaces', { labelSelector: labelSelector },
-    onNamespaceWatchEvent, onNamespaceWatchComplete);
+/**
+ * Watches for namespaces being created.
+ */
+function watchNamespaces() {
+    const watch = new k8s.Watch(k8sConfig);
+    watch.watch('/api/v1/namespaces', { labelSelector: labelSelector },
+        onNamespaceWatchEvent, onNamespaceWatchComplete);
+}
 
-updateCredentials();
+/**
+ * Schedules periodic updates of the credentials.
+ */
+function scheduleUpdates() {
+    cron.schedule(cronSchedule, updateCredentials);
+}
 
-cron.schedule(cronSchedule, updateCredentials);
+watchNamespaces();
+scheduleUpdates();

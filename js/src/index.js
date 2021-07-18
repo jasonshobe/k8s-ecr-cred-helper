@@ -18,6 +18,7 @@ const { ECRClient, GetAuthorizationTokenCommand } = require('@aws-sdk/client-ecr
 const k8s = require('@kubernetes/client-node');
 const cron = require('node-cron');
 const differenceInMinutes = require('date-fns/differenceInMinutes');
+const formatISO = require('date-fns/formatISO');
 
 const registry = process.env.DOCKER_REGISTRY;
 const secretName = process.env.ECR_SECRET_NAME;
@@ -42,6 +43,34 @@ function checkStatus(response, messageSupplier) {
     if (response.statusCode < 200 || response.statusCode >= 300) {
         throw new Error(messageSupplier());
     }
+}
+
+function logInfo(message) {
+    const timestamp = formatISO(new Date())
+    console.log(`${timestamp} INFO  ${message}`)
+}
+
+/**
+ * Writes an error message to the log.
+ * 
+ * @param {string} message the error message.
+ * @param {*} error the error object.
+ */
+function logError(message, error) {
+    const timestamp = formatISO(new Date())
+    var logMessage;
+
+    if(error.stack) {
+        logMessage = `${message}: ${error.message}\n${error.stack}`
+    }
+    else if(error.message) {
+        logMessage = `${message}: ${error.message}`
+    }
+    else {
+        logMessage = `${message}: ${error}`;
+    }
+
+    console.error(`${timestamp} ERROR ${logMessage}`);
 }
 
 /**
@@ -135,7 +164,7 @@ function secretExists(namespace) {
  * @returns {Promise} an empty promise for error handling.
  */
 function updateSecret(namespace, token) {
-    console.log(`Updating secret in ${namespace}`)
+    logInfo(`Updating secret in ${namespace}`)
     const patch = [
         {
             op: 'replace',
@@ -162,7 +191,7 @@ function updateSecret(namespace, token) {
  * @returns {Promise} an empty promise for error handling.
  */
 function createSecret(namespace, token) {
-    console.log(`Creating secret in ${namespace}`)
+    logInfo(`Creating secret in ${namespace}`)
     const secret = {
         apiVersion: 'v1',
         kind: 'Secret',
@@ -197,7 +226,7 @@ function updateNamespaceCredentials(namespace, token) {
             }
         })
         .catch(error => {
-            console.error(`Failed to update credentials in namespace ${namespace}: `, error)
+            logError(`Failed to update credentials in namespace ${namespace}`, error);
         });
 }
 
@@ -214,7 +243,7 @@ function updateCredentials() {
         }
     })
     .catch(error => {
-        console.error('Failed to update credentials: ', error);
+        logError('Failed to update credentials', error);
     });
 }
 
@@ -230,7 +259,7 @@ function onNamespaceWatchEvent(phase, apiObj) {
             updateNamespaceCredentials(apiObj.metadata.name, token);
         })
         .catch(error => {
-            console.error('Failed to create secret in new namespace: ', error);
+            logError('Failed to create secret in new namespace', error);
         });
     }
 }
@@ -242,10 +271,10 @@ function onNamespaceWatchEvent(phase, apiObj) {
  */
 function onNamespaceWatchComplete(error) {
     if (error) {
-        console.error('Namespace watch failed: ', error);
+        logError('Namespace watch failed', error);
     }
     else {
-        console.log('Namespace watch ended');
+        logInfo('Namespace watch ended');
     }
 
     // restart watch if connection is broken
